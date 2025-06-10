@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>지뢰찾기 게임</title>
+<style>
+  body { font-family: Arial, sans-serif; text-align: center; margin: 20px; }
+  #board { margin: 20px auto; display: grid; gap: 2px; }
+  .cell {
+    width: 30px; height: 30px;
+    background: #bbb;
+    font-weight: bold;
+    font-size: 18px;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .cell.open { background: #eee; cursor: default; }
+  .cell.mine { background: red; color: white; }
+  .cell.flag { background: #f0c330; }
+  #controls { margin-top: 10px; }
+  select, button { font-size: 16px; padding: 5px 10px; }
+  #timer { font-size: 18px; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<h1>지뢰찾기</h1>
+
+<div id="controls">
+  난이도:
+  <select id="difficulty">
+    <option value="easy">쉬움 (9x9, 지뢰 10개)</option>
+    <option value="medium">중간 (16x16, 지뢰 40개)</option>
+    <option value="hard">어려움 (16x30, 지뢰 99개)</option>
+  </select>
+  <button id="startBtn">게임 시작</button>
+  <button id="restartBtn" disabled>다시 시작</button>
+</div>
+
+<div id="timer">시간: 0초</div>
+
+<div id="board"></div>
+
+<script>
+(() => {
+  const boardEl = document.getElementById('board');
+  const difficultySelect = document.getElementById('difficulty');
+  const startBtn = document.getElementById('startBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const timerEl = document.getElementById('timer');
+
+  let rows, cols, minesCount;
+  let board = [];
+  let revealedCount = 0;
+  let minePositions = new Set();
+  let timer = null;
+  let timeElapsed = 0;
+  let gameOver = false;
+
+  function setDifficulty(diff) {
+    if (diff === 'easy') {
+      rows = 9; cols = 9; minesCount = 10;
+    } else if (diff === 'medium') {
+      rows = 16; cols = 16; minesCount = 40;
+    } else if (diff === 'hard') {
+      rows = 16; cols = 30; minesCount = 99;
+    }
+  }
+
+  function createBoard() {
+    boardEl.style.gridTemplateColumns = `repeat(${cols}, 30px)`;
+    boardEl.style.gridTemplateRows = `repeat(${rows}, 30px)`;
+    boardEl.innerHTML = '';
+
+    board = [];
+    minePositions.clear();
+    revealedCount = 0;
+    gameOver = false;
+
+    for (let r = 0; r < rows; r++) {
+      board[r] = [];
+      for (let c = 0; c < cols; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.dataset.row = r;
+        cell.dataset.col = c;
+        cell.addEventListener('click', onCellClick);
+        cell.addEventListener('contextmenu', onCellRightClick);
+        boardEl.appendChild(cell);
+        board[r][c] = {
+          element: cell,
+          isMine: false,
+          isRevealed: false,
+          isFlagged: false,
+          adjacentMines: 0,
+        };
+      }
+    }
+  }
+
+  // 지뢰 배치 - 첫 클릭 후 배치 (첫 클릭 지뢰 제외)
+  function placeMines(firstClickRow, firstClickCol) {
+    let placed = 0;
+    while (placed < minesCount) {
+      const r = Math.floor(Math.random() * rows);
+      const c = Math.floor(Math.random() * cols);
+
+      // 첫 클릭 위치 및 주변 8칸 안에 지뢰 배치 금지
+      if (board[r][c].isMine || (Math.abs(r - firstClickRow) <= 1 && Math.abs(c - firstClickCol) <= 1)) {
+        continue;
+      }
+
+      board[r][c].isMine = true;
+      minePositions.add(`${r},${c}`);
+      placed++;
+    }
+  }
+
+  // 각 칸 주변 지뢰 개수 계산
+  function calculateAdjacents() {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (board[r][c].isMine) {
+          board[r][c].adjacentMines = -1;
+          continue;
+        }
+        let count = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (dr === 0 && dc === 0) continue;
+            const nr = r + dr;
+            const nc = c + dc;
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+              if (board[nr][nc].isMine) count++;
+            }
+          }
+        }
+        board[r][c].adjacentMines = count;
+      }
+    }
+  }
+
+  function revealCell(r, c) {
+    const cell = board[r][c];
+    if (cell.isRevealed || cell.isFlagged) return;
+    cell.isRevealed = true;
+    cell.element.classList.add('open');
+    revealedCount++;
+
+    if (cell.isMine) {
+      cell.element.classList.add('mine');
+      endGame(false);
+      return;
+    }
+
+    if (cell.adjacentMines > 0) {
+      cell.element.textContent = cell.adjacentMines;
+      cell.element.style.color = getNumberColor(cell.adjacentMines);
+    } else {
+      // 주변 빈 칸 재귀 탐색
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const nr = r + dr;
+          const nc = c + dc;
+          if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+            revealCell(nr, nc);
+          }
+        }
+      }
+    }
+
+    if (revealedCount === rows * cols - minesCount) {
+      endGame(true);
+    }
+  }
+
+  function getNumberColor(num) {
+    const colors = {
+      1: 'blue',
+      2: 'green',
+      3: 'red',
+      4: 'darkblue',
+      5: 'darkred',
+      6: 'teal',
+      7: 'black',
+      8: 'gray'
+    };
+    return colors[num] || 'black';
+  }
+
+  function onCellClick(e) {
+    if (gameOver) return;
+    const r = +this.dataset.row;
+    const c = +this.dataset.col;
+
+    // 첫 클릭시 지뢰 배치 및 타이머 시작
+    if (!timer) {
+      placeMines(r, c);
+      calculateAdjacents();
+      startTimer();
+    }
+
+    revealCell(r, c);
+  }
+
+  function onCellRightClick(e) {
+    e.preventDefault();
+    if (gameOver || !timer) return;
+    const r = +this.dataset.row;
+    const c = +this.dataset.col;
+    const cell = board[r][c];
+    if (cell.isRevealed) return;
+
+    if (cell.isFlagged) {
+      cell.isFlagged = false;
+      cell.element.classList.remove('flag');
+      cell.element.textContent = '';
+    } else {
+      cell.isFlagged = true;
+      cell.element.classList.add('flag');
+      cell.element.textContent = '🚩';
+    }
+  }
+
+  function startTimer() {
+    timeElapsed = 0;
+    timerEl.textContent = `시간: 0초`;
+    timer = setInterval(() => {
+      timeElapsed++;
+      timerEl.textContent = `시간: ${timeElapsed}초`;
+    }, 1000);
+  }
+
+  function stopTimer() {
+    clearInterval(timer);
+    timer = null;
+  }
+
+  function endGame(won) {
+    gameOver = true;
+    stopTimer();
+
+    // 지뢰 모두 오픈
+    if (!won) {
+      minePositions.forEach(pos => {
+        const [r, c] = pos.split(',').map(Number);
+        const cell = board[r][c];
+        if (!cell.isRevealed) {
+          cell.element.classList.add('mine');
+          cell.element.textContent = '💣';
+          cell.element.classList.add('open');
+        }
+      });
+      alert('게임 오버! 지뢰를 밟았습니다.');
+    } else {
+      alert(`축하합니다! ${timeElapsed}초 만에 성공했습니다!`);
+    }
+
+    restartBtn.disabled = false;
+  }
+
+  function resetGame() {
+    stopTimer();
+    timerEl.textContent = `시간: 0초`;
+    restartBtn.disabled = true;
+    const diff = difficultySelect.value;
+    setDifficulty(diff);
+    createBoard();
+  }
+
+  startBtn.addEventListener('click', () => {
+    resetGame();
+  });
+
+  restartBtn.addEventListener('click', () => {
+    resetGame();
+  });
+
+  // 초기 셋팅
+  setDifficulty(difficultySelect.value);
+  createBoard();
+
+})();
+</script>
+
+</body>
+</html>
